@@ -10,6 +10,10 @@ export CONFIG_FILE
 # breaks the validator ("Too many open files") and resets /status connections under load.
 ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 
+# [sws] kernel-optim sws-llvm SwiftShader run-time switch (docker/opt/sws/sws_mode.sh; PGH_SWS / PGH_SWS_THREADS), before
+# anything starts Chrome. Never fails the start; one "[sws]" line per Chrome dir. No file = image without sws (no-op).
+if [ -f /opt/sws/sws_mode.sh ]; then bash /opt/sws/sws_mode.sh || true; fi
+
 
 # Thread pools: the GLM vLLM's CPU-side image preprocessing spawns nproc-sized OpenMP pools; on a small-quota
 # host (10 CPUs seen on RunPod) that oversubscription made the judge's cold path 1.9x slower, while OMP=1 costs
@@ -29,6 +33,19 @@ fi
 echo "=== STAGE 2: FastAPI ==="
 python serve.py &
 SERVE_PID=$!
+
+
+# 404 (leader-style pgh1): build the SGLang coder env + GDN kernel patches and the GLM vLLM judge env + scheduler patch
+# here (network steps retried 5x, each step skipped when its done-marker exists). If anything still fails, no server is
+# started: FastAPI restarts in REPLACE mode (/status=replace -> the validator drops this pod: warm-up fails loudly).
+echo "=== STAGE 2.4: 404 env build (/opt/ls/build_envs.sh) ==="
+if ! bash /opt/ls/build_envs.sh; then
+    echo "=== 404 ENV BUILD FAILED - no servers started; FastAPI restarted in REPLACE mode ===" >&2
+    touch /tmp/pod_replace
+    kill $SERVE_PID 2>/dev/null || true; wait $SERVE_PID 2>/dev/null || true
+    python serve.py
+    exit 1
+fi
 
 
 # Dedicated GLM vLLM env (GLM-4.6V needs a newer transformers than the coder).

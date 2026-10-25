@@ -328,6 +328,15 @@ def main() -> int:
         print(f"[vllm-spawn] Invalid YAML in {path}: {e}", file=sys.stderr)
         return 1
 
+    _mix = None
+    if os.environ.get("PGH_MIX_CODERS", "").strip().lower() not in ("", "0", "off", "false", "no"):
+        # [mix] R71 (pgh_mix.py): 2 coder clients, one per GPU set, each its own shim (--mix-slot i/n); invalid -> as is
+        import pgh_mix as _mix_mod
+        _mix, _ = _mix_mod.parse(cfg)
+        cfg = _mix_mod.apply_cfg(cfg, log=lambda m: print(f"[vllm-spawn] {m}", flush=True))
+        if _mix is not None:
+            _mix_mod.spawn_clear()
+
     try:
         jobs = _build_jobs(cfg)
     except ValueError as e:
@@ -353,7 +362,9 @@ def main() -> int:
             failures += 1
             continue
         try:
-            _spawn_one(j)
+            _p = _spawn_one(j)
+            if _mix is not None:   # [mix] pid file for the other shim's patch barrier
+                _mix_mod.spawn_note(_mix, j.name, _p.pid)
         except Exception as e:  # noqa: BLE001 - one client's failure must not kill the rest
             print(f"[vllm-spawn] ERROR {j.name}: spawn failed: {e}", file=sys.stderr)
             failures += 1
